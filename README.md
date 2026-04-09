@@ -16,7 +16,6 @@ Create a `.env` file with at least:
 DATABASE_URL=postgres://...
 REDIS_URL=redis://localhost:6379
 PORT=3000
-WS_PORT=3001
 CORS_ORIGIN=http://localhost:3000
 ```
 
@@ -24,9 +23,7 @@ CORS_ORIGIN=http://localhost:3000
 
 ```sh
 bun install
-bun run dev        # API server
-bun run dev:socket # WebSocket server
-bun run dev:all    # API + WebSocket
+bun run dev        # API + WebSocket server
 ```
 
 ## Database

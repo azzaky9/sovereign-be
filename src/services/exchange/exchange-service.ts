@@ -4,6 +4,7 @@ import type {
   ConfirmPaymentPayload,
   ParsedCreateExchangePayload,
 } from '../shared/types'
+import { pendingTxQueue } from '../shared/queue'
 import { db } from '../../db'
 import {
   balanceLedgers,
@@ -39,9 +40,27 @@ export async function createExchange(payload: ParsedCreateExchangePayload) {
       txHash: createPendingTxHash(),
       amount: payload.amount.toFixed(8),
       network: payload.network,
+      amountFee: quote.feeAmount.toFixed(8),
       status: 'pending',
     })
     .returning()
+
+  // Enqueue blockchain watcher job
+  await pendingTxQueue.add(
+    'watch-deposit',
+    {
+      depositId: createdDeposit.id,
+      userId: payload.userId,
+      walletAddress: wallet.address,
+      network: payload.network,
+      token: payload.token,
+      amount: payload.amount.toFixed(8),
+      createdAt: createdDeposit.createdAt?.toISOString() ?? new Date().toISOString(),
+    },
+    {
+      jobId: `watch-${createdDeposit.id}`,
+    },
+  )
 
   return {
     exchangeId: createdDeposit.id,

@@ -1,7 +1,9 @@
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { Redis } from 'ioredis'
 
+import { upgradeWebSocket, websocket } from 'hono/bun'
 import { db } from './db'
 import { userBalances } from './db/schema'
 import {
@@ -31,6 +33,40 @@ app.use(
     allowMethods: ['GET', 'POST', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
   }),
+)
+
+app.get(
+  '/ws',
+  upgradeWebSocket((c) => {
+    const authorization = c.req.header('authorization')
+    const userId =
+      c.req.header('user') ?? c.req.header('x-user-id') ?? c.req.query('userId') ?? 'anonymous'
+
+    return {
+      onOpen(_evt, ws) {
+        if (!authorization) {
+          ws.close(1008, 'Missing authorization header')
+          return
+        }
+
+        const authScheme = authorization.split(' ')[0] || 'unknown'
+        console.log('WebSocket connection established', { userId, authScheme, authorization })
+        ws.send(
+          JSON.stringify({
+            event: 'connected',
+            userId,
+          }),
+        )
+      },
+      onMessage(event, ws) {
+        console.log(`Message from client (${userId}): ${event.data}`)
+        ws.send('Hello from server!')
+      },
+      onClose: () => {
+        console.log('Connection closed')
+      },
+    }
+  })
 )
 
 function isSupportedToken(value: string): value is SupportedToken {
@@ -254,11 +290,30 @@ app.get('/api/users/:userId/balance', async (c) => {
 
 const port = Number(process.env.PORT) || 3000
 
-Bun.serve({
+const redisUrl = process.env.REDIS_URL
+if (!redisUrl) {
+  throw new Error('REDIS_URL is required')
+}
+
+const subscriber = new Redis(redisUrl)
+
+const server = Bun.serve({
   port,
   fetch: app.fetch,
+  websocket
+})
+
+void subscriber.psubscribe('ws:*')
+subscriber.on('pmessage', (_pattern, channel, message) => {
+  const topic = channel.replace('ws:', '')
+  server.publish(topic, message)
+})
+
+subscriber.on('error', (error) => {
+  console.error('Redis subscriber error:', error)
 })
 
 console.log(`API server on http://localhost:${port}`)
+console.log(`WS endpoint on ws://localhost:${port} or ws://localhost:${port}/ws`)
 
 export default app
