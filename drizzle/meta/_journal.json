@@ -36,6 +36,13 @@
       "when": 1775747301358,
       "tag": "0004_cooing_thing",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1775752677603,
+      "tag": "0005_awesome_rage",
+      "breakpoints": true
     }
   ]
 }

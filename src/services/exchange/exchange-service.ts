@@ -11,8 +11,10 @@ import {
   deposits,
   depositWallets,
   disbursements,
+  networks,
   userBalances,
 } from '../../db/schema'
+import { parseUnits } from 'viem'
 import { calculateQuote } from '../rates/calculate-quote'
 import { publishWsEvent } from '../shared/ws-events'
 import { getOrCreateStaticWallet } from '../wallet/get-or-create-static-wallet'
@@ -21,8 +23,35 @@ function createPendingTxHash() {
   return `pending:${crypto.randomUUID()}`
 }
 
+function generateQrValue(
+  walletAddress: string,
+  networkKey: string,
+) {
+  if (networkKey === 'solana') {
+    return `solana:${walletAddress}`
+  }
+  
+  if (networkKey === 'tron') {
+    return `tron:${walletAddress}`
+  }
+  
+  // Return raw address for EVM chains to ensure maximum wallet compatibility
+  // when scanning for a simple address copy
+  return walletAddress
+}
+
 export async function createExchange(payload: ParsedCreateExchangePayload) {
-  const wallet = await getOrCreateStaticWallet(payload.userId, payload.network)
+  const [networkInfo] = await db
+    .select()
+    .from(networks)
+    .where(and(eq(networks.token, payload.token), eq(networks.id, payload.network)))
+    .limit(1)
+
+  if (!networkInfo) {
+    throw new Error(`Network ${payload.network} not found for token ${payload.token}`)
+  }
+
+  const wallet = await getOrCreateStaticWallet(payload.userId, networkInfo.id)
   const quote = await calculateQuote(payload.token, payload.amount)
   const creditDescription = `After your ${payload.token} deposit is confirmed, your balance will be credited ${quote.idrNet.toLocaleString('en-US', {
     minimumFractionDigits: 2,
@@ -39,11 +68,12 @@ export async function createExchange(payload: ParsedCreateExchangePayload) {
       walletId: wallet.id,
       txHash: createPendingTxHash(),
       amount: payload.amount.toFixed(8),
-      network: payload.network,
+      networkId: networkInfo.id,
       amountFee: quote.feeAmount.toFixed(8),
       status: 'pending',
     })
     .returning()
+
 
   // Enqueue blockchain watcher job
   await pendingTxQueue.add(
@@ -52,7 +82,7 @@ export async function createExchange(payload: ParsedCreateExchangePayload) {
       depositId: createdDeposit.id,
       userId: payload.userId,
       walletAddress: wallet.address,
-      network: payload.network,
+      network: networkInfo.networkKey, // Send the key to the worker
       token: payload.token,
       amount: payload.amount.toFixed(8),
       createdAt: createdDeposit.createdAt?.toISOString() ?? new Date().toISOString(),
@@ -60,6 +90,12 @@ export async function createExchange(payload: ParsedCreateExchangePayload) {
     {
       jobId: `watch-${createdDeposit.id}`,
     },
+  )
+
+  let qrCodeValue = wallet.address
+  qrCodeValue = generateQrValue(
+    wallet.address,
+    networkInfo.networkKey,
   )
 
   return {
@@ -71,6 +107,7 @@ export async function createExchange(payload: ParsedCreateExchangePayload) {
     sendAmount: payload.amount,
     referenceId: payload.referenceId,
     walletAddress: wallet.address,
+    qrValue: qrCodeValue,
     quote,
     estimatedCreditIdr: quote.idrNet,
     creditDescription,
@@ -85,7 +122,7 @@ export async function getExchangeStatus(exchangeId: string) {
       userId: deposits.userId,
       txHash: deposits.txHash,
       amount: deposits.amount,
-      network: deposits.network,
+      networkId: deposits.networkId,
       status: deposits.status,
       createdAt: deposits.createdAt,
       settledAt: deposits.settledAt,
@@ -119,7 +156,7 @@ export async function getExchangeStatus(exchangeId: string) {
     userId: deposit.userId,
     txHash: deposit.txHash,
     amount: Number(deposit.amount),
-    network: deposit.network,
+    network: deposit.networkId, // Return the networkId
     walletAddress: deposit.walletAddress,
     status: deposit.status,
     settledAt: deposit.settledAt,
@@ -144,7 +181,7 @@ export async function confirmPayment(payload: ConfirmPaymentPayload) {
       userId: deposits.userId,
       amount: deposits.amount,
       status: deposits.status,
-      network: deposits.network,
+      networkId: deposits.networkId,
     })
     .from(deposits)
     .where(eq(deposits.id, payload.exchangeId))

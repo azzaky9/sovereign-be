@@ -9,11 +9,13 @@ export async function listActiveNetworksByToken(
 ): Promise<NetworkCatalogItem[]> {
   const rows = await db
     .select({
+      id: networks.id,
       token: networks.token,
       networkKey: networks.networkKey,
       networkName: networks.networkName,
       iconKey: networks.iconKey,
       isActive: networks.isActive,
+      mode: networks.mode,
     })
     .from(networks)
     .where(and(eq(networks.token, token), eq(networks.isActive, true)))
@@ -21,14 +23,14 @@ export async function listActiveNetworksByToken(
   return rows as NetworkCatalogItem[]
 }
 
-export async function isNetworkActiveForToken(token: SupportedToken, networkKey: string) {
+export async function isNetworkActiveForToken(token: SupportedToken, networkId: string) {
   const [row] = await db
     .select({ id: networks.id })
     .from(networks)
     .where(
       and(
         eq(networks.token, token),
-        eq(networks.networkKey, networkKey),
+        eq(networks.id, networkId),
         eq(networks.isActive, true),
       ),
     )

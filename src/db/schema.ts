@@ -22,7 +22,7 @@ export const networks = pgTable('networks', {
 export const depositWallets = pgTable('deposit_wallets', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: varchar('user_id', { length: 100 }).notNull(),
-  network: varchar('network', { length: 50 }).notNull(),
+  networkId: uuid('network_id').references(() => networks.id).notNull(),
   address: varchar('address', { length: 100 }).notNull().unique(),
   derivationIndex: numeric('derivation_index').notNull(),
   createdAt: timestamp('created_at').defaultNow(),
@@ -35,7 +35,7 @@ export const deposits = pgTable('deposits', {
   txHash: varchar('tx_hash', { length: 100 }).notNull().unique(),
   amount: numeric('amount', { precision: 20, scale: 8 }).notNull(),
   amountFee: numeric('amount_fee', { precision: 20, scale: 8 }).notNull(),
-  network: varchar('network', { length: 50 }).notNull(),
+  networkId: uuid('network_id').references(() => networks.id).notNull(),
   status: statusEnum('status').default('pending'),
   createdAt: timestamp('created_at').defaultNow(),
   settledAt: timestamp('settled_at'),

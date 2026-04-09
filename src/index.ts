@@ -204,6 +204,7 @@ app.post('/api/exchange', async (c) => {
   }
 
   const exchange = await createExchange(payload)
+  console.log("Response", exchange)
   return c.json(exchange, 201)
 })
 
@@ -288,14 +289,11 @@ app.get('/api/users/:userId/balance', async (c) => {
   })
 })
 
+import { getRedisConnection } from './services/shared/queue'
+
 const port = Number(process.env.PORT) || 3000
 
-const redisUrl = process.env.REDIS_URL
-if (!redisUrl) {
-  throw new Error('REDIS_URL is required')
-}
-
-const subscriber = new Redis(redisUrl)
+const subscriber = getRedisConnection()
 
 const server = Bun.serve({
   port,

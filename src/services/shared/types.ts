@@ -7,11 +7,13 @@ export type SupportedNetwork = string
 export type ExchangeStatus = (typeof statusEnum.enumValues)[number]
 
 export type NetworkCatalogItem = {
+  id: string
   token: SupportedToken
   networkKey: string
   networkName: string
   iconKey: string
   isActive: boolean
+  mode: string
 }
 
 export type QuoteResult = {

@@ -7,12 +7,12 @@ import { createWalletForUser } from './create-wallet'
 
 export async function getOrCreateStaticWallet(
   userId: string,
-  network: SupportedNetwork,
+  networkId: string,
 ) {
   const [existingWallet] = await db
     .select()
     .from(depositWallets)
-    .where(and(eq(depositWallets.userId, userId), eq(depositWallets.network, network)))
+    .where(and(eq(depositWallets.userId, userId), eq(depositWallets.networkId, networkId)))
     .limit(1)
 
   if (existingWallet) {
@@ -20,17 +20,17 @@ export async function getOrCreateStaticWallet(
       id: existingWallet.id,
       address: existingWallet.address,
       derivationIndex: Number(existingWallet.derivationIndex),
-      network: existingWallet.network,
+      networkId: existingWallet.networkId,
     }
   }
 
-  const wallet = createWalletForUser(userId, network)
+  const wallet = createWalletForUser(userId, networkId)
 
   const [createdWallet] = await db
     .insert(depositWallets)
     .values({
       userId,
-      network,
+      networkId,
       address: wallet.address,
       derivationIndex: wallet.derivationIndex.toString(),
     })
@@ -40,6 +40,6 @@ export async function getOrCreateStaticWallet(
     id: createdWallet.id,
     address: createdWallet.address,
     derivationIndex: Number(createdWallet.derivationIndex),
-    network: createdWallet.network,
+    networkId: createdWallet.networkId,
   }
 }

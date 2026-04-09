@@ -1,5 +1,7 @@
 import { Redis } from 'ioredis'
 
+import { getRedisConnection } from './queue'
+
 let publisher: Redis | null = null
 
 function getPublisher() {
@@ -7,12 +9,7 @@ function getPublisher() {
     return publisher
   }
 
-  const redisUrl = process.env.REDIS_URL
-  if (!redisUrl) {
-    return null
-  }
-
-  publisher = new Redis(redisUrl)
+  publisher = getRedisConnection()
   publisher.on('error', (error) => {
     console.error('Redis publisher error:', error)
   })

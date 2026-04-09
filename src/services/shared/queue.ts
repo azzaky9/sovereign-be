@@ -12,7 +12,7 @@ export type PendingTxJobData = {
   createdAt: string
 }
 
-// ── Redis connection ─────────────────────────────────────────────────────────
+import Redis from 'ioredis'
 
 export function getRedisConnection() {
   const url = process.env.REDIS_URL
@@ -20,14 +20,12 @@ export function getRedisConnection() {
     throw new Error('REDIS_URL is required')
   }
 
-  const parsed = new URL(url)
-
-  return {
-    host: parsed.hostname,
-    port: Number(parsed.port) || 6379,
-    password: parsed.password || undefined,
-    username: parsed.username !== 'default' ? parsed.username : undefined,
-  }
+  // BullMQ requires maxRetriesPerRequest: null
+  // family: 4 forces IPv4 to avoid localhost resolving to ::1 hang issues on Windows/WSL
+  return new Redis(url, {
+    maxRetriesPerRequest: null,
+    family: 4,
+  })
 }
 
 // ── Queue definitions ────────────────────────────────────────────────────────

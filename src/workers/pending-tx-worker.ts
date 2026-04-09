@@ -248,6 +248,7 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
             // 6. Batch disbursement via Multicall3
             if (SIGNER_PRIVATE_KEY && TREASURY_ADDRESS && FEE_VAULT_ADDRESS) {
               try {
+                console.log({ SIGNER_PRIVATE_KEY, TREASURY_ADDRESS, FEE_VAULT_ADDRESS })
                 const account = privateKeyToAccount(SIGNER_PRIVATE_KEY)
                 const walletClientInstance = createWalletClient({
                   account,
