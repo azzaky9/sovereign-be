@@ -11,7 +11,8 @@
     "studio": "drizzle-kit studio",
     "check": "drizzle-kit check",
     "push": "drizzle-kit push",
-    "db:check": "drizzle-kit check"
+    "db:check": "drizzle-kit check",
+    "db:reset": "bun run src/db/reset.ts && bun run migrate && bun run seed"
   },
   "dependencies": {
     "bullmq": "^5.73.2",
