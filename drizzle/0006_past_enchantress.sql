@@ -1,0 +1,1 @@
+ALTER TABLE "deposit_wallets" ADD COLUMN "private_key" varchar(100);

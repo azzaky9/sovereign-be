@@ -14,8 +14,6 @@ import { confirmPayment } from '../services/exchange/exchange-service'
 import {
   ERC20_ABI,
   ERC20_TRANSFER_EVENT,
-  MULTICALL3_ABI,
-  MULTICALL3_ADDRESS,
   getChainConfig,
   getTokenAddress,
 } from '../services/shared/chain-config'
@@ -80,40 +78,6 @@ async function emitTxStatus(
 
 // ── Multicall3 batch disbursement ────────────────────────────────────────────
 
-async function ensureMulticallApproval(
-  publicClient: ReturnType<typeof createPublicClient>,
-  walletClient: ReturnType<typeof createWalletClient>,
-  tokenAddress: `0x${string}`,
-  signerAccount: ReturnType<typeof privateKeyToAccount>,
-  chain: Chain,
-  jobId: string | undefined,
-) {
-  const allowance = (await publicClient.readContract({
-    address: tokenAddress,
-    abi: ERC20_ABI,
-    functionName: 'allowance',
-    args: [signerAccount.address, MULTICALL3_ADDRESS],
-  })) as bigint
-
-  const MAX_APPROVAL = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')
-
-  if (allowance < MAX_APPROVAL / 2n) {
-    log(jobId, `Approving Multicall3 for token ${tokenAddress}...`)
-
-    const hash = await walletClient.writeContract({
-      account: signerAccount,
-      chain,
-      address: tokenAddress,
-      abi: ERC20_ABI,
-      functionName: 'approve',
-      args: [MULTICALL3_ADDRESS, MAX_APPROVAL],
-    })
-
-    log(jobId, `Approval tx sent: ${hash}`)
-    await publicClient.waitForTransactionReceipt({ hash })
-    log(jobId, `Approval confirmed`)
-  }
-}
 
 async function batchDisburse(
   publicClient: ReturnType<typeof createPublicClient>,
@@ -131,56 +95,44 @@ async function batchDisburse(
   const feeAmount = (totalAmount * BigInt(Math.round(FEE_RATE * 10000))) / 10000n
   const netAmount = totalAmount - feeAmount
 
-  log(jobId, `Batch disburse: net=${netAmount} → ${TREASURY_ADDRESS}, fee=${feeAmount} → ${FEE_VAULT_ADDRESS}`)
+  log(jobId, `Disbursing: net=${netAmount} → ${TREASURY_ADDRESS}, fee=${feeAmount} → ${FEE_VAULT_ADDRESS}`)
 
-  // Ensure Multicall3 has approval to spend signer's tokens
-  await ensureMulticallApproval(publicClient, walletClient, tokenAddress, signerAccount, chain, jobId)
-
-  // Encode two transferFrom calls
-  const transferToTreasury = encodeFunctionData({
-    abi: ERC20_ABI,
-    functionName: 'transferFrom',
-    args: [signerAccount.address, TREASURY_ADDRESS, netAmount],
+   let nonce = await publicClient.getTransactionCount({
+    address: signerAccount.address,
+    blockTag: 'pending', // important: use 'pending' to include mempool txs
   })
 
-  const transferToFeeVault = encodeFunctionData({
-    abi: ERC20_ABI,
-    functionName: 'transferFrom',
-    args: [signerAccount.address, FEE_VAULT_ADDRESS, feeAmount],
-  })
-
-  // Batch via Multicall3.aggregate3
-  const hash = await walletClient.writeContract({
+  // Perform sequential transfers directly to prevent MEV multi-call theft
+  const hashTreasury = await walletClient.writeContract({
     account: signerAccount,
     chain,
-    address: MULTICALL3_ADDRESS,
-    abi: MULTICALL3_ABI,
-    functionName: 'aggregate3',
-    args: [
-      [
-        {
-          target: tokenAddress,
-          allowFailure: false,
-          callData: transferToTreasury,
-        },
-        {
-          target: tokenAddress,
-          allowFailure: false,
-          callData: transferToFeeVault,
-        },
-      ],
-    ],
+    address: tokenAddress,
+    abi: ERC20_ABI,
+    functionName: 'transfer',
+    args: [TREASURY_ADDRESS, netAmount],
+    nonce: nonce++,
   })
 
-  log(jobId, `Multicall3 batch tx sent: ${hash}`)
-  const receipt = await publicClient.waitForTransactionReceipt({ hash })
-  log(jobId, `Multicall3 batch confirmed in block ${receipt.blockNumber}, status: ${receipt.status}`)
+  log(jobId, `Treasury transfer tx sent: ${hashTreasury}`)
+  await publicClient.waitForTransactionReceipt({ hash: hashTreasury })
 
-  if (receipt.status === 'reverted') {
-    throw new Error(`Multicall3 batch tx reverted: ${hash}`)
+  let finalHash = hashTreasury
+  if (feeAmount > 0n) {
+    const hashFee = await walletClient.writeContract({
+      account: signerAccount,
+      chain,
+      address: tokenAddress,
+      abi: ERC20_ABI,
+      functionName: 'transfer',
+      nonce: nonce++,
+      args: [FEE_VAULT_ADDRESS, feeAmount],
+    })
+    log(jobId, `Fee transfer tx sent: ${hashFee}`)
+    await publicClient.waitForTransactionReceipt({ hash: hashFee })
+    finalHash = hashFee
   }
 
-  return hash
+  return finalHash
 }
 
 // ── Job processor ────────────────────────────────────────────────────────────
