@@ -297,7 +297,6 @@ app.post('/api/exchange', async (c) => {
   }
 
   const exchange = await createExchange(payload)
-  console.log('Response', exchange)
   return c.json(exchange, 201)
 })
 
