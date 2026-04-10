@@ -1,12 +1,12 @@
 import { Worker } from 'bullmq'
 import {
-  type Chain,
   createPublicClient,
   createWalletClient,
   encodeFunctionData,
   formatUnits,
   http,
   parseUnits,
+  type Chain,
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -24,6 +24,7 @@ import {
   getRedisConnection,
   type PendingTxJobData,
 } from '../services/shared/queue'
+import { publishWsEvent } from '../services/shared/ws-events'
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -53,13 +54,37 @@ function logError(jobId: string | undefined, ...args: unknown[]) {
   console.error(`[${ts}] [pending-tx] [${jobId ?? 'worker'}]`, ...args)
 }
 
+async function emitTxStatus(
+  job: { id?: string; data: PendingTxJobData },
+  status: string,
+  details?: Record<string, unknown>,
+) {
+  const { depositId, userId, network, token } = job.data
+  const payload = {
+    event: 'pending-tx:status',
+    status,
+    depositId,
+    userId,
+    network,
+    token,
+    jobId: job.id,
+    timestamp: new Date().toISOString(),
+    ...details,
+  }
+
+  await Promise.all([
+    publishWsEvent(`exchange:${depositId}`, payload),
+    publishWsEvent(`user:${userId}`, payload),
+  ])
+}
+
 // ── Multicall3 batch disbursement ────────────────────────────────────────────
 
 async function ensureMulticallApproval(
   publicClient: ReturnType<typeof createPublicClient>,
   walletClient: ReturnType<typeof createWalletClient>,
   tokenAddress: `0x${string}`,
-  signerAddress: `0x${string}`,
+  signerAccount: ReturnType<typeof privateKeyToAccount>,
   chain: Chain,
   jobId: string | undefined,
 ) {
@@ -67,7 +92,7 @@ async function ensureMulticallApproval(
     address: tokenAddress,
     abi: ERC20_ABI,
     functionName: 'allowance',
-    args: [signerAddress, MULTICALL3_ADDRESS],
+    args: [signerAccount.address, MULTICALL3_ADDRESS],
   })) as bigint
 
   const MAX_APPROVAL = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff')
@@ -76,7 +101,7 @@ async function ensureMulticallApproval(
     log(jobId, `Approving Multicall3 for token ${tokenAddress}...`)
 
     const hash = await walletClient.writeContract({
-      account: signerAddress,
+      account: signerAccount,
       chain,
       address: tokenAddress,
       abi: ERC20_ABI,
@@ -94,7 +119,7 @@ async function batchDisburse(
   publicClient: ReturnType<typeof createPublicClient>,
   walletClient: ReturnType<typeof createWalletClient>,
   tokenAddress: `0x${string}`,
-  signerAddress: `0x${string}`,
+  signerAccount: ReturnType<typeof privateKeyToAccount>,
   totalAmount: bigint,
   chain: Chain,
   jobId: string | undefined,
@@ -109,24 +134,24 @@ async function batchDisburse(
   log(jobId, `Batch disburse: net=${netAmount} → ${TREASURY_ADDRESS}, fee=${feeAmount} → ${FEE_VAULT_ADDRESS}`)
 
   // Ensure Multicall3 has approval to spend signer's tokens
-  await ensureMulticallApproval(publicClient, walletClient, tokenAddress, signerAddress, chain, jobId)
+  await ensureMulticallApproval(publicClient, walletClient, tokenAddress, signerAccount, chain, jobId)
 
   // Encode two transferFrom calls
   const transferToTreasury = encodeFunctionData({
     abi: ERC20_ABI,
     functionName: 'transferFrom',
-    args: [signerAddress, TREASURY_ADDRESS, netAmount],
+    args: [signerAccount.address, TREASURY_ADDRESS, netAmount],
   })
 
   const transferToFeeVault = encodeFunctionData({
     abi: ERC20_ABI,
     functionName: 'transferFrom',
-    args: [signerAddress, FEE_VAULT_ADDRESS, feeAmount],
+    args: [signerAccount.address, FEE_VAULT_ADDRESS, feeAmount],
   })
 
   // Batch via Multicall3.aggregate3
   const hash = await walletClient.writeContract({
-    account: signerAddress,
+    account: signerAccount,
     chain,
     address: MULTICALL3_ADDRESS,
     abi: MULTICALL3_ABI,
@@ -165,6 +190,10 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
   const jobId = job.id
 
   log(jobId, `Starting watch — deposit=${depositId} wallet=${walletAddress} network=${network} token=${token} amount=${amount}`)
+  await emitTxStatus(job, 'watch_started', {
+    walletAddress,
+    expectedAmount: amount,
+  })
 
   // 1. Resolve chain config
   const chainConfig = getChainConfig(network)
@@ -196,6 +225,11 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
   const fromBlock = startBlock > lookBackBlocks ? startBlock - lookBackBlocks : 0n
 
   log(jobId, `Watching from block ${fromBlock} (current: ${startBlock}), token decimals: ${decimals}`)
+  await emitTxStatus(job, 'watching', {
+    fromBlock: fromBlock.toString(),
+    currentBlock: startBlock.toString(),
+    decimals,
+  })
 
   const expectedAmount = parseUnits(amount, decimals)
   const deadline = Date.now() + WATCH_TIMEOUT_MS
@@ -208,6 +242,11 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
     const currentBlock = await publicClient.getBlockNumber()
 
     log(jobId, `Poll #${pollCount} — scanning blocks ${fromBlock}..${currentBlock}`)
+    await emitTxStatus(job, 'scanning', {
+      pollCount,
+      fromBlock: fromBlock.toString(),
+      toBlock: currentBlock.toString(),
+    })
 
     try {
       const logs = await publicClient.getLogs({
@@ -234,6 +273,14 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
 
           if (transferValue >= expectedAmount) {
             log(jobId, `Amount matched (expected >= ${formatUnits(expectedAmount, decimals)}). Confirming payment...`)
+            await emitTxStatus(job, 'transfer_matched', {
+              txHash,
+              receivedAmount: formatUnits(transferValue, decimals),
+              expectedAmount: formatUnits(expectedAmount, decimals),
+            })
+            await emitTxStatus(job, 'confirming_payment', {
+              txHash,
+            })
 
             // 5. Confirm payment in the database
             const confirmResult = await confirmPayment({
@@ -244,12 +291,21 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
             })
 
             log(jobId, `Payment confirmed:`, JSON.stringify(confirmResult))
+            await emitTxStatus(job, 'payment_confirmed', {
+              txHash,
+              confirmResult,
+            })
 
             // 6. Batch disbursement via Multicall3
             if (SIGNER_PRIVATE_KEY && TREASURY_ADDRESS && FEE_VAULT_ADDRESS) {
               try {
-                console.log({ SIGNER_PRIVATE_KEY, TREASURY_ADDRESS, FEE_VAULT_ADDRESS })
                 const account = privateKeyToAccount(SIGNER_PRIVATE_KEY)
+                log(jobId, `Disbursement signer=${account.address}, treasury=${TREASURY_ADDRESS}, feeVault=${FEE_VAULT_ADDRESS}`)
+                await emitTxStatus(job, 'disbursement_started', {
+                  signer: account.address,
+                  treasuryAddress: TREASURY_ADDRESS,
+                  feeVaultAddress: FEE_VAULT_ADDRESS,
+                })
                 const walletClientInstance = createWalletClient({
                   account,
                   chain: chainConfig.chain,
@@ -260,26 +316,33 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
                   publicClient,
                   walletClientInstance,
                   tokenAddress,
-                  account.address,
+                  account,
                   transferValue,
                   chainConfig.chain,
                   jobId,
                 )
 
                 log(jobId, `Batch disbursement complete: ${disburseTxHash}`)
+                await emitTxStatus(job, 'disbursement_succeeded', {
+                  txHash,
+                  disburseTxHash,
+                  amount: formatUnits(transferValue, decimals),
+                })
 
-                return {
+                const result = {
                   settled: true,
                   depositId,
                   txHash,
                   disburseTxHash,
                   amount: formatUnits(transferValue, decimals),
                 }
+                await emitTxStatus(job, 'settled', result)
+                return result
               } catch (disburseError) {
                 logError(jobId, `Batch disbursement failed (deposit already confirmed):`, disburseError)
                 // Deposit is confirmed even if disbursement fails
                 // Disbursement can be retried manually
-                return {
+                const result = {
                   settled: true,
                   depositId,
                   txHash,
@@ -287,15 +350,27 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
                   disburseError: String(disburseError),
                   amount: formatUnits(transferValue, decimals),
                 }
+                await emitTxStatus(job, 'disbursement_failed', {
+                  txHash,
+                  disburseError: String(disburseError),
+                })
+                await emitTxStatus(job, 'settled', result)
+                return result
               }
             } else {
               log(jobId, `Skipping batch disbursement — SIGNER_PRIVATE_KEY, TREASURY_ADDRESS, or FEE_VAULT_ADDRESS not set`)
-              return {
+              const result = {
                 settled: true,
                 depositId,
                 txHash,
                 amount: formatUnits(transferValue, decimals),
               }
+              await emitTxStatus(job, 'disbursement_skipped', {
+                txHash,
+                reason: 'missing_disbursement_env',
+              })
+              await emitTxStatus(job, 'settled', result)
+              return result
             }
           } else {
             log(
@@ -303,11 +378,19 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
               `Amount too low: received ${formatUnits(transferValue, decimals)}, ` +
                 `expected >= ${formatUnits(expectedAmount, decimals)}. Continuing watch...`,
             )
+            await emitTxStatus(job, 'transfer_amount_too_low', {
+              txHash,
+              receivedAmount: formatUnits(transferValue, decimals),
+              expectedAmount: formatUnits(expectedAmount, decimals),
+            })
           }
         }
       }
     } catch (pollError) {
       logError(jobId, `Poll error (will retry):`, pollError)
+      await emitTxStatus(job, 'scan_error', {
+        error: String(pollError),
+      })
     }
 
     // Wait before next poll
@@ -321,6 +404,10 @@ async function processWatchDeposit(job: { id?: string; data: PendingTxJobData })
 
   // Timeout reached
   log(jobId, `Watch timed out after ${WATCH_TIMEOUT_MS / 1000}s — no matching transfer found`)
+  await emitTxStatus(job, 'timeout', {
+    timeoutSeconds: WATCH_TIMEOUT_MS / 1000,
+    walletAddress,
+  })
   throw new Error(`WATCH_TIMEOUT: No matching ${token} transfer to ${walletAddress} on ${network} within ${WATCH_TIMEOUT_MS / 1000}s`)
 }
 

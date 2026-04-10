@@ -1,7 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { Redis } from 'ioredis'
 
 import { upgradeWebSocket, websocket } from 'hono/bun'
 import { db } from './db'
@@ -26,6 +25,16 @@ import { getOrCreateStaticWallet } from './services/wallet/get-or-create-static-
 
 const app = new Hono()
 
+function subscribeTopic(ws: { raw?: unknown }, topic: string) {
+  const raw = ws.raw as { subscribe?: (topic: string) => void } | undefined
+  raw?.subscribe?.(topic)
+}
+
+function unsubscribeTopic(ws: { raw?: unknown }, topic: string) {
+  const raw = ws.raw as { unsubscribe?: (topic: string) => void } | undefined
+  raw?.unsubscribe?.(topic)
+}
+
 app.use(
   '*',
   cors({
@@ -39,8 +48,8 @@ app.get(
   '/ws',
   upgradeWebSocket((c) => {
     const authorization = c.req.header('authorization')
-    const userId =
-      c.req.header('user') ?? c.req.header('x-user-id') ?? c.req.query('userId') ?? 'anonymous'
+    const userId = c.req.header('user') ?? c.req.header('x-user-id') ?? c.req.query('userId') ?? undefined
+    const exchangeId = c.req.query('exchangeId') ?? undefined
 
     return {
       onOpen(_evt, ws) {
@@ -50,23 +59,107 @@ app.get(
         }
 
         const authScheme = authorization.split(' ')[0] || 'unknown'
-        console.log('WebSocket connection established', { userId, authScheme, authorization })
+        console.log('WebSocket connection established', {
+          userId: userId ?? 'anonymous',
+          exchangeId: exchangeId ?? null,
+          authScheme,
+        })
+
+        if (userId) {
+          subscribeTopic(ws, `user:${userId}`)
+        }
+
+        if (exchangeId) {
+          subscribeTopic(ws, `exchange:${exchangeId}`)
+        }
+
         ws.send(
           JSON.stringify({
             event: 'connected',
-            userId,
+            userId: userId ?? null,
+            exchangeId: exchangeId ?? null,
+            subscriptions: [
+              ...(userId ? [`user:${userId}`] : []),
+              ...(exchangeId ? [`exchange:${exchangeId}`] : []),
+            ],
           }),
         )
       },
       onMessage(event, ws) {
-        console.log(`Message from client (${userId}): ${event.data}`)
-        ws.send('Hello from server!')
+        try {
+          const payload = JSON.parse(String(event.data)) as {
+            action?: string
+            exchangeId?: string
+            userId?: string
+          }
+
+          if (payload.action === 'subscribe' && payload.exchangeId) {
+            subscribeTopic(ws, `exchange:${payload.exchangeId}`)
+            ws.send(
+              JSON.stringify({
+                event: 'subscribed',
+                topic: `exchange:${payload.exchangeId}`,
+              }),
+            )
+            return
+          }
+
+          if (payload.action === 'subscribe' && payload.userId) {
+            subscribeTopic(ws, `user:${payload.userId}`)
+            ws.send(
+              JSON.stringify({
+                event: 'subscribed',
+                topic: `user:${payload.userId}`,
+              }),
+            )
+            return
+          }
+
+          if (payload.action === 'unsubscribe' && payload.exchangeId) {
+            unsubscribeTopic(ws, `exchange:${payload.exchangeId}`)
+            ws.send(
+              JSON.stringify({
+                event: 'unsubscribed',
+                topic: `exchange:${payload.exchangeId}`,
+              }),
+            )
+            return
+          }
+
+          if (payload.action === 'unsubscribe' && payload.userId) {
+            unsubscribeTopic(ws, `user:${payload.userId}`)
+            ws.send(
+              JSON.stringify({
+                event: 'unsubscribed',
+                topic: `user:${payload.userId}`,
+              }),
+            )
+            return
+          }
+
+          ws.send(
+            JSON.stringify({
+              event: 'error',
+              message: 'Unsupported action. Use subscribe/unsubscribe with exchangeId or userId',
+            }),
+          )
+        } catch {
+          ws.send(
+            JSON.stringify({
+              event: 'error',
+              message: 'Invalid JSON payload',
+            }),
+          )
+        }
       },
       onClose: () => {
-        console.log('Connection closed')
+        console.log('Connection closed', {
+          userId: userId ?? 'anonymous',
+          exchangeId: exchangeId ?? null,
+        })
       },
     }
-  })
+  }),
 )
 
 function isSupportedToken(value: string): value is SupportedToken {
@@ -204,7 +297,7 @@ app.post('/api/exchange', async (c) => {
   }
 
   const exchange = await createExchange(payload)
-  console.log("Response", exchange)
+  console.log('Response', exchange)
   return c.json(exchange, 201)
 })
 
@@ -298,7 +391,7 @@ const subscriber = getRedisConnection()
 const server = Bun.serve({
   port,
   fetch: app.fetch,
-  websocket
+  websocket,
 })
 
 void subscriber.psubscribe('ws:*')
