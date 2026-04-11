@@ -168,9 +168,9 @@ const NETWORK_SEEDS = [
   {
     mode: "testnet",
     token: "USDC",
-    networkKey: "base",
-    networkName: "Base",
-    iconKey: "NetworkBase",
+    networkKey: "base_sepolia",
+    networkName: "Base Sepolia",
+    iconKey: "NetworkBaseSepolia",
     chainId: 84532, // Base Sepolia
     contractAddress: "0x036CbD53842c5426634e7929541ec2318f3dCF7",
     decimals: 6,
@@ -178,7 +178,6 @@ const NETWORK_SEEDS = [
 ] as const;
 
 async function seedNetworks() {
-
   await db
     .delete(networks)
     .where(
@@ -189,17 +188,20 @@ async function seedNetworks() {
     );
 
   await db.insert(networks).values(
-    NETWORK_SEEDS.map((item) => ({
-      token: item.token,
-      networkKey: item.networkKey,
-      networkName: item.networkName,
-      iconKey: item.iconKey,
-      isActive: true,
-      mode: item.mode,
-      contractAddress: item.contractAddress,
-      decimal: item.decimals,
-      chainId: String(item.chainId)
-    }) as TNetworks),
+    NETWORK_SEEDS.map(
+      (item) =>
+        ({
+          token: item.token,
+          networkKey: item.networkKey,
+          networkName: item.networkName,
+          iconKey: item.iconKey,
+          isActive: true,
+          mode: item.mode,
+          contractAddress: item.contractAddress,
+          decimal: item.decimals,
+          chainId: String(item.chainId),
+        }) as TNetworks,
+    ),
   );
 }
 

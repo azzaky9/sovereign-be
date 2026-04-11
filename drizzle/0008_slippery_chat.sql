@@ -1,0 +1,1 @@
+ALTER TABLE "deposit_wallets" ADD COLUMN "smart_wallet" varchar(100);
