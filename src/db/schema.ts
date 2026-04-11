@@ -24,7 +24,7 @@ export const depositWallets = pgTable('deposit_wallets', {
   userId: varchar('user_id', { length: 100 }).notNull(),
   networkId: uuid('network_id').references(() => networks.id).notNull(),
   address: varchar('address', { length: 100 }).notNull().unique(),
-  derivationIndex: numeric('derivation_index').notNull(),
+  privateKey: varchar('private_key', { length: 255 }).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
 })
 

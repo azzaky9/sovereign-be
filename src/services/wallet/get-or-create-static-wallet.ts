@@ -19,12 +19,12 @@ export async function getOrCreateStaticWallet(
     return {
       id: existingWallet.id,
       address: existingWallet.address,
-      derivationIndex: Number(existingWallet.derivationIndex),
+      privateKey: existingWallet.privateKey,
       networkId: existingWallet.networkId,
     }
   }
 
-  const wallet = createWalletForUser(userId, networkId)
+  const wallet = createWalletForUser(userId, networkId as SupportedNetwork)
 
   const [createdWallet] = await db
     .insert(depositWallets)
@@ -32,14 +32,14 @@ export async function getOrCreateStaticWallet(
       userId,
       networkId,
       address: wallet.address,
-      derivationIndex: wallet.derivationIndex.toString(),
+      privateKey: wallet.privateKey,
     })
     .returning()
 
   return {
     id: createdWallet.id,
     address: createdWallet.address,
-    derivationIndex: Number(createdWallet.derivationIndex),
+    privateKey: createdWallet.privateKey,
     networkId: createdWallet.networkId,
   }
 }
